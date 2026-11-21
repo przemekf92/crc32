@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import zlib
 import hashlib
+from enum import Enum
 import os.path
 import sys
 from typing import Optional
@@ -28,9 +29,9 @@ def main() -> None:
     if opt == "--":
       break
     elif opt in ["--lhex", "--uhex", "--uint", "--sint"]:
-      fmt = opt[2:]
+      fmt = Fmt(opt[2:])
     elif opt in ["--md5", "--sha1", "--sha256"]:
-      algo = opt[2:]
+      algo = Algo(opt[2:])
     elif opt == "--help":
       exitusage(code=0, usestdout=True)
     else:
@@ -52,14 +53,16 @@ def main() -> None:
   except UnsupportedFmtForAlgo as exc:
     sys.stderr.write(_prog()+": "+str(exc)+"\n")
     exit(1)
-def chksumfile(fn: str, fmt: Optional[str] = None, algo: Optional[str] = None) -> str:
-  fmt = ("lhex" if fmt is None else fmt)
-  algo = ("crc32" if algo is None else algo)
-  if fmt not in ["lhex", "uhex", "uint", "sint"]:
+def _prog() -> str:
+  return os.path.basename(sys.argv[0])
+def chksumfile(fn: str, fmt: Optional["Fmt"] = None, algo: Optional["Algo"] = None) -> str:
+  fmt = (Fmt.LHEX if fmt is None else fmt)
+  algo = (Algo.CRC32 if algo is None else algo)
+  if fmt not in [Fmt.LHEX, Fmt.UHEX, Fmt.UINT, Fmt.SINT]:
     raise UnsupportedFmt(fmt)
-  if fmt in ["uint", "sint"] and algo != "crc32":
+  if fmt in [Fmt.UINT, Fmt.SINT] and algo != Algo.CRC32:
     raise UnsupportedFmtForAlgo(fmt=fmt, algo=algo)
-  if algo == "crc32":
+  if algo == Algo.CRC32:
     chksum = CRC32()
   else:
     chksum = Hash(algo)
@@ -70,16 +73,16 @@ def chksumfile(fn: str, fmt: Optional[str] = None, algo: Optional[str] = None) -
         chksum.update(chunk)
       else:
         break
-  if fmt == "lhex":
+  if fmt == Fmt.LHEX:
     return chksum.lhex()
-  elif fmt == "uhex":
+  elif fmt == Fmt.UHEX:
     return chksum.uhex()
-  elif fmt == "uint":
+  elif fmt == Fmt.UINT:
     if isinstance(chksum, CRC32):
       return str(chksum.uint())
     else:
       raise InternalError
-  elif fmt == "sint":
+  elif fmt == Fmt.SINT:
     if isinstance(chksum, CRC32):
       return str(chksum.sint())
     else:
@@ -128,12 +131,12 @@ def _bbytes32(x: int) -> bytes:
 def _lbytes32(x: int) -> bytes:
   return _uint32(x).to_bytes(4, "little", signed=False)
 class Hash:
-  def __init__(self, algo: str, data: bytes = b""):
-    if algo == "sha256":
+  def __init__(self, algo: "Algo", data: bytes = b""):
+    if algo == Algo.SHA256:
       self._hashobj = hashlib.sha256(data)
-    elif algo == "sha1":
+    elif algo == Algo.SHA1:
       self._hashobj = hashlib.sha1(data)
-    elif algo == "md5":
+    elif algo == Algo.MD5:
       self._hashobj = hashlib.md5(data)
     else:
       raise UnsupportedAlgo(algo)
@@ -145,19 +148,27 @@ class Hash:
     return self._hashobj.hexdigest().upper()
   def bytes(self) -> bytes:
     return self._hashobj.digest()
-def _prog() -> str:
-  return os.path.basename(sys.argv[0])
+class Fmt(Enum):
+  LHEX = "lhex"
+  UHEX = "uhex"
+  UINT = "uint"
+  SINT = "sint"
+class Algo(Enum):
+  CRC32 = "crc32"
+  MD5 = "md5"
+  SHA1 = "sha1"
+  SHA256 = "sha256"
 class UnsupportedFmt(Exception):
-  def __init__(self, fmt: str):
-    super().__init__("unsupported format '"+fmt+"'")
+  def __init__(self, fmt: "Fmt"):
+    super().__init__("unsupported format '"+fmt.value+"'")
     self.fmt = fmt
 class UnsupportedAlgo(Exception):
-  def __init__(self, algo: str):
-    super().__init__("unsupported algorithm '"+algo+"'")
+  def __init__(self, algo: "Algo"):
+    super().__init__("unsupported algorithm '"+algo.value+"'")
     self.algo = algo
 class UnsupportedFmtForAlgo(Exception):
-  def __init__(self, fmt: str, algo: str):
-    super().__init__("format '"+fmt+"' unsupported for algorithm '"+algo+"'")
+  def __init__(self, fmt: "Fmt", algo: "Algo"):
+    super().__init__("format '"+fmt.value+"' unsupported for algorithm '"+algo.value+"'")
     self.fmt = fmt
     self.algo = algo
 class InternalError(Exception):
