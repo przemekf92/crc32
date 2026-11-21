@@ -3,6 +3,7 @@ import zlib
 import hashlib
 import os.path
 import sys
+from typing import Optional
 def exitusage(code: int = 1, usestdout: bool = False):
   out = (sys.stderr if not usestdout else sys.stdout)
   out.write("Usage: "+_prog()+" [OPTION...] <FILE...>\n")
@@ -19,8 +20,8 @@ def exitusage(code: int = 1, usestdout: bool = False):
   out.write("      --help        display this help and exit\n")
   exit(code)
 def main() -> None:
-  fmt = "lhex"
-  algo = "crc32"
+  fmt = None
+  algo = None
   args = sys.argv[1:]
   while len(args) > 0 and args[0].startswith("-") and args[0] != "-":
     opt = args.pop(0)
@@ -38,43 +39,53 @@ def main() -> None:
       exitusage()
   if len(args) == 0:
     exitusage()
-  ret = 0
-  for fn in args:
-    try:
-      if algo == "crc32":
-        chksum = CRC32()
+  try:
+    ret = 0
+    for fn in args:
+      try:
+        chksumstr = chksumfile(fn, fmt=fmt, algo=algo)
+        print(chksumstr+"  "+fn)
+      except OSError as exc:
+        ret = 1
+        sys.stderr.write(_prog()+": "+fn+": "+(exc.strerror or str(exc))+"\n")
+    exit(ret)
+  except UnsupportedFmtForAlgo as exc:
+    sys.stderr.write(_prog()+": "+str(exc)+"\n")
+    exit(1)
+def chksumfile(fn: str, fmt: Optional[str] = None, algo: Optional[str] = None) -> str:
+  fmt = ("lhex" if fmt is None else fmt)
+  algo = ("crc32" if algo is None else algo)
+  if fmt not in ["lhex", "uhex", "uint", "sint"]:
+    raise UnsupportedFmt(fmt)
+  if fmt in ["uint", "sint"] and algo != "crc32":
+    raise UnsupportedFmtForAlgo(fmt=fmt, algo=algo)
+  if algo == "crc32":
+    chksum = CRC32()
+  else:
+    chksum = Hash(algo)
+  with (open(fn, "rb") if fn != "-" else sys.stdin.buffer) as f:
+    while True:
+      chunk = f.read(131072)
+      if len(chunk) > 0:
+        chksum.update(chunk)
       else:
-        chksum = Hash(algo)
-      with (open(fn, "rb") if fn != "-" else sys.stdin.buffer) as f:
-        while True:
-          chunk = f.read(131072)
-          if len(chunk) > 0:
-            chksum.update(chunk)
-          else:
-            break
-      if fmt == "lhex":
-        chksumstr = chksum.lhex()
-      elif fmt == "uhex":
-        chksumstr = chksum.uhex()
-      elif fmt == "uint":
-        if isinstance(chksum, CRC32):
-          chksumstr = str(chksum.uint())
-        else:
-          sys.stderr.write(_prog()+": format '"+fmt+"' unsupported for algorithm '"+algo+"'\n")
-          exit(1)
-      elif fmt == "sint":
-        if isinstance(chksum, CRC32):
-          chksumstr = str(chksum.sint())
-        else:
-          sys.stderr.write(_prog()+": format '"+fmt+"' unsupported for algorithm '"+algo+"'\n")
-          exit(1)
-      else:
-        raise Exception("internal error")
-      print(chksumstr+"  "+fn)
-    except OSError as exc:
-      ret = 1
-      sys.stderr.write(_prog()+": "+fn+": "+(exc.strerror or str(exc))+"\n")
-  exit(ret)
+        break
+  if fmt == "lhex":
+    return chksum.lhex()
+  elif fmt == "uhex":
+    return chksum.uhex()
+  elif fmt == "uint":
+    if isinstance(chksum, CRC32):
+      return str(chksum.uint())
+    else:
+      raise InternalError
+  elif fmt == "sint":
+    if isinstance(chksum, CRC32):
+      return str(chksum.sint())
+    else:
+      raise InternalError
+  else:
+    raise InternalError
 class CRC32:
   def __init__(self, data: bytes = b""):
     self._crc = zlib.crc32(data)
@@ -88,6 +99,12 @@ class CRC32:
     return _uint32(self._crc)
   def sint(self) -> int:
     return _sint32(self._crc)
+  def bbytes(self) -> bytes:
+      # bbytes = big-endian bytes
+    return _bbytes32(self._crc)
+  def lbytes(self) -> bytes:
+      # lbytes = little-endian bytes
+    return _lbytes32(self._crc)
 def _lhex32(x: int) -> str:
   return ("%08x" % _uint32(x)).lower()
 def _uhex32(x: int) -> str:
@@ -98,14 +115,18 @@ def _uint32(x: int) -> int:
   elif x >= -0x80000000 and x < 0:
     return 0x100000000 + x
   else:
-    raise Exception("argument out of range: "+str(x))
+    raise OverflowError("argument out of range: "+str(x))
 def _sint32(x: int) -> int:
   if x >= -0x80000000 and x < 0x80000000:
     return x
   elif x >= 0x80000000 and x < 0x100000000:
     return x - 0x100000000
   else:
-    raise Exception("argument out of range: "+str(x))
+    raise OverflowError("argument out of range: "+str(x))
+def _bbytes32(x: int) -> bytes:
+  return _uint32(x).to_bytes(4, "big", signed=False)
+def _lbytes32(x: int) -> bytes:
+  return _uint32(x).to_bytes(4, "little", signed=False)
 class Hash:
   def __init__(self, algo: str, data: bytes = b""):
     if algo == "sha256":
@@ -115,14 +136,32 @@ class Hash:
     elif algo == "md5":
       self._hashobj = hashlib.md5(data)
     else:
-      raise Exception("unsupported algorithm: "+algo)
+      raise UnsupportedAlgo(algo)
   def update(self, data: bytes) -> None:
     self._hashobj.update(data)
   def lhex(self) -> str:
     return self._hashobj.hexdigest().lower()
   def uhex(self) -> str:
     return self._hashobj.hexdigest().upper()
+  def bytes(self) -> bytes:
+    return self._hashobj.digest()
 def _prog() -> str:
   return os.path.basename(sys.argv[0])
+class UnsupportedFmt(Exception):
+  def __init__(self, fmt: str):
+    super().__init__("unsupported format '"+fmt+"'")
+    self.fmt = fmt
+class UnsupportedAlgo(Exception):
+  def __init__(self, algo: str):
+    super().__init__("unsupported algorithm '"+algo+"'")
+    self.algo = algo
+class UnsupportedFmtForAlgo(Exception):
+  def __init__(self, fmt: str, algo: str):
+    super().__init__("format '"+fmt+"' unsupported for algorithm '"+algo+"'")
+    self.fmt = fmt
+    self.algo = algo
+class InternalError(Exception):
+  def __init__(self):
+    super().__init__("internal error")
 if __name__=="__main__":
   main()
